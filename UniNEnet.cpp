@@ -93,6 +93,7 @@ void UniNEnet::AllocateEventLog( UInt32 size )
 		kprintf( "AllocateEventLog - UniNEnet evLog allocation failed " );
 		return;
 	}
+	IOUnmapPages( kernel_map, (vm_offset_t)fpELG, size );
 	rc = IOSetProcessorCacheMode(	kernel_task,
 									(IOVirtualAddress)fpELG,
 									size,
@@ -550,7 +551,7 @@ void UniNEnet::free()
 {
 	ELG( this, 0, 'Free', "UniNEnet::free" );
 
-	putToSleep( false );
+///	putToSleep( false );	// unnecessary and causes crash if never start()'d
 
 	flushRings( true, true );	// Flush both Tx and Rx rings.
 
