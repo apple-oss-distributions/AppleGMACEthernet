@@ -29,7 +29,6 @@
 #define super IOEthernetController
 
 
-	extern globals		g;			/* the globals	*/
 
 	/****** From iokit/IOKit/pwr_mgt/IOPMpowerState.h 
 		struct IOPMPowerState
@@ -163,16 +162,16 @@ void UniNEnet::stopPHY()
 	UInt16	  i, val16;
 
 
-	ELG( fWOL, phyBCMType, '-Phy', "stopPHY" );
+	ELG( fWOL, fPHYType, '-Phy', "stopPHY" );
 
-	if ( !fBuiltin || (phyBCMType == 0) )
+	if ( !fBuiltin || (fPHYType == 0) )
 		return;
 
 
 	if ( fWOL == false )
 	{
 			// disabling MIF interrupts on the 5201 is explicit
-		if ( phyBCMType == 5201 )
+		if ( fPHYType == 0x5201 )
 		{
 			miiWriteWord( 0x0000, MII_BCM5201_INTERRUPT, kPHYAddr0 );
 				// 0 or 0x1f or phyId?	miiFindPHY returns any integer
@@ -236,7 +235,7 @@ void UniNEnet::stopPHY()
 			IODelay( 10 );
 			if ( i++ >= 100 )
 			{
-				ALERT( 0, val32, 'Sft-', "stopPHY - timeout on SoftwareReset" );
+				ALRT( 0, val32, 'Sft-', "stopPHY - timeout on SoftwareReset" );
 				break;
 			}
 			val32 = READ_REGISTER( SoftwareReset );
@@ -246,16 +245,31 @@ void UniNEnet::stopPHY()
 		WRITE_REGISTER( RxMACSoftwareResetCommand, kRxMACSoftwareResetCommand_Reset );
 
 			// This is what actually turns off the LINK LED
-		if ( (phyBCMType == 5400) || (phyBCMType == 5401) )
+
+		switch ( fPHYType )
 		{
+		case 0x5400:
+		case 0x5401:
 #if 0
 				// The 5400 has read/write privilege on this bit,
 				// but 5201 is read-only.
 			miiWriteWord( MII_CONTROL_POWERDOWN, MII_CONTROL, kPHYAddr0 );
 #endif
-		}
-		else  // Only other possibility is Broadcom 5201 (or 5202?)
-		{
+			break;
+
+		case 0x5221:
+				// 1: enable shadow mode registers in 5221 (0x1A-0x1E)
+			miiReadWord( &val16, MII_BCM5221_TestRegister, kPHYAddr0 );
+			miiWriteWord( val16 | MII_BCM5221_ShadowRegEnableBit, MII_BCM5221_TestRegister, kPHYAddr0 );	
+
+				// 2: Force IDDQ mode for max power savings
+				// remember..after setting IDDQ mode we have to "hard" reset
+				// the PHY in order to access it.
+			miiReadWord( &val16, MII_BCM5221_AuxiliaryMode4, kPHYAddr0 );
+			miiWriteWord( val16 | MII_BCM5221_SetIDDQMode, MII_BCM5221_AuxiliaryMode4, kPHYAddr0 );
+			break;
+
+		case 0x5201:
 #if 0
 			miiReadWord( &val16, MII_BCM5201_AUXMODE2, kPHYAddr0 );
 			miiWriteWord( val16 & ~MII_BCM5201_AUXMODE2_LOWPOWER,
@@ -265,7 +279,16 @@ void UniNEnet::stopPHY()
 			miiWriteWord( MII_BCM5201_MULTIPHY_SUPERISOLATE,
 						  MII_BCM5201_MULTIPHY,
 						  kPHYAddr0 );
-		}
+			break;
+
+
+		case 0x5411:
+		case 0x5421:
+		default:
+			miiWriteWord( MII_CONTROL_POWERDOWN, MII_CONTROL, kPHYAddr0 );
+			break;
+		}/* end SWITCH on PHY type */
+
 			/* Put the MDIO pins into a benign state.							*/
 			/* Note that the management regs in the PHY will be inaccessible.	*/
 			/* This is to guarantee max power savings on Powerbooks and			*/
@@ -293,11 +316,11 @@ void UniNEnet::startPHY()
 	UInt16	  val16;
 
 
-	ELG( this, phyBCMType, 'Phy+', "startPHY" );
+	ELG( this, fPHYType, 'Phy+', "startPHY" );
 
 //	if (netifClient)  // MacOS 9 uses numClients == 1?
 //	{
-//	IOLog( "UniN on restart phy = %d\n", phyBCMType );
+//	IOLog( "UniN on restart phy = %d\n", fPHYType );
 
 	val32 = READ_REGISTER( TxConfiguration );
 	WRITE_REGISTER( TxConfiguration, val32 | kTxConfiguration_Tx_DMA_Enable );
@@ -308,11 +331,13 @@ void UniNEnet::startPHY()
 	val32 = READ_REGISTER( TxMACConfiguration );
 	WRITE_REGISTER( TxMACConfiguration, val32 | kTxMACConfiguration_TxMac_Enable );
 
-	val32 = READ_REGISTER( RxMACConfiguration );
-	WRITE_REGISTER( RxMACConfiguration,
-							val32 | kRxMACConfiguration_Rx_Mac_Enable
-								  | kRxMACConfiguration_Strip_FCS
-								  | kRxMACConfiguration_Hash_Filter_Enable );
+	val32  = READ_REGISTER( RxMACConfiguration );	/// ??? use fRxMACConfiguration?
+	val32 |= kRxMACConfiguration_Rx_Mac_Enable | kRxMACConfiguration_Hash_Filter_Enable;
+	if ( fIsPromiscuous )
+		 val32 &= ~kRxMACConfiguration_Strip_FCS;
+	else val32 |=  kRxMACConfiguration_Strip_FCS;
+
+	WRITE_REGISTER( RxMACConfiguration, val32 );
 
 		// Set flag to RxMACEnabled somewhere??
 
@@ -321,7 +346,7 @@ void UniNEnet::startPHY()
 		   and there is no link then the xcvr registers become unclocked and
 		   unable to be written
 		 */
-	if ( phyBCMType == 5201 )
+	if ( fPHYType == 0x5201 )
 	{
 			// Ask Enrique why the following 2 lines are not necessary in OS 9.
 			// These 2 lines should take the PHY out of superisolate mode.
@@ -343,7 +368,7 @@ void UniNEnet::startPHY()
 		// there should be a case to handle it for MII_CONTROL_POWERDOWN bit
 		// here, unless it is unnecessary after a hardware reset
 
-	WRITE_REGISTER( RxKick, RX_RING_LENGTH - 4 );
+	WRITE_REGISTER( RxKick, fRxRingElements - 4 );
 //	}
 	return;
 }/* end startPHY */
